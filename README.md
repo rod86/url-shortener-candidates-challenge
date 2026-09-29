@@ -24,7 +24,12 @@ url-shortener/
 - Node version 20.20.2 (for dev environment)
 - Docker and Docker compose
 
-> *NOTE*: for old docker versions, docker compose commands must run with `docker-compose`.
+> *NOTE*: Older Docker versions use a hyphenated command. Run `docker-compose` instead of `docker compose`.
+>
+> ```bash
+> docker compose version   # newer syntax (Docker Compose v2+)
+> docker-compose version   # older syntax (v1, standalone binary)
+> ```
 
 ## Setup development environment
 
