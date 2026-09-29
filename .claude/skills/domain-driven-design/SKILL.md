@@ -1,0 +1,360 @@
+---
+name: domain-driven-design
+description: Domain-Driven Design guidelines for TypeScript backends — how to organize business logic into bounded contexts with domain, application, and infrastructure layers, and the exact format for entities, use cases, repository interfaces, domain errors, and adapters. Use whenever writing or reviewing business logic, creating an entity, use case, repository, or domain error, structuring a new TypeScript backend or feature, or when the user mentions DDD, domain model, use cases, layers, or bounded contexts — even if they don't say "DDD" explicitly.
+---
+
+# DDD Guidelines
+
+Organize business logic by Domain-Driven Design: bounded contexts, each split into three layers. Keep the domain pure, the application thin, and the libraries at the edge.
+
+## Structure
+
+One folder per bounded context (a business area: `user`, `order`, `billing`), each with the same three layers plus a wiring file:
+
+```
+src/modules/
+  <context>/               # e.g. order/
+    domain/                # entities + entity data shapes
+      interfaces/          # contracts implemented by infrastructure
+      errors/              # business errors
+    application/           # use cases
+    infrastructure/        # adapters, grouped in subfolders (persistence/, providerApi/, ...)
+    services.ts              # wires infrastructure into use cases
+  shared/                  # code used by 2+ contexts; imports from no context
+    domain/interfaces/     # shared ports
+    infrastructure/         # their adapters, grouped in subfolders (database/, ...)
+```
+
+**Generated values come from outside the logic.** Ids, timestamps, random codes and any other generated value are never produced inside a use case or entity. The caller (the edge: HTTP handler, CLI command, worker) generates them and passes them in the use case `Query` as native types (`id: string`, `createdAt: Date`). The business logic only validates and uses what it receives. Because nothing impure runs inside the logic, use cases are deterministic in tests with no mocked globals and no fixed clocks or generators.
+
+**Dependency rule** — imports point inward only: `infrastructure → application → domain`. The domain imports nothing from the other layers; the application never imports infrastructure. If code used by one context sits in `shared/`, move it into that context.
+
+**At a glance:**
+
+| Thing | Convention | Location |
+| --- | --- | --- |
+| Entity | `export type <Name> = { ... }`, file `<Name>.ts`, native types only | `<context>/domain/` |
+| Entity data shape | `export type <Name>Filter` / `Update<Name>` in the entity's file | `<context>/domain/` |
+| Port / contract | `interface <Domain><Role>Interface` — `<Role>` = the port's purpose (Repository, Provider, Gateway, Hasher, …), never a technology; default export | `<context>/domain/interfaces/` |
+| Domain error | `class <What>Error extends DomainError`, declares `code` + `category` | `<context>/domain/errors/` |
+| Use case | `class <Name>UseCase`, filename = class, single `invoke(query?)` | `<context>/application/` |
+| Use case input | `<Name>Query` — optional; when present it's an object of native types (never raw params); omit entirely when the use case takes no input | same file as the use case |
+| Use case output | `<Name>Response` — the return shape, never a domain entity; omit it and return `void` when not needed | same file as the use case |
+| Adapter | `class <Technology><Contract>` implementing a domain port | `<context>/infrastructure/<subfolder>/` — same rule for `shared/infrastructure/<subfolder>/` |
+| Wiring | `services.ts` exports instantiated use cases; sole entry point for outside code | `<context>/services.ts` |
+
+Port names describe their role, not their technology: `OrderRepositoryInterface` (persistence), `PaymentTransactionProviderInterface` (external provider).
+
+## Domain layer (`<context>/domain/`)
+
+Entities are plain TypeScript types — one per file, file named after the entity, native types only (`string`, `number`, `Date`). Data shapes that belong to an entity (filters, partial-update types) live in the entity's file, not in `interfaces/`:
+
+```typescript
+// domain/Order.ts
+export type Order = {
+    id: string;
+    customerName: string;
+    total: number;
+    createdAt: Date;
+    updatedAt: Date;
+};
+
+export type OrderFilter = {
+    customerName?: string;
+};
+
+export type UpdateOrder = {
+    customerName?: string;
+    total?: number;
+    updatedAt: Date;
+};
+```
+
+**`domain/interfaces/`** holds only contracts the inner layers depend on — the ports that infrastructure will implement. Name them `<Domain><Role>Interface`, where `<Role>` describes the kind of port (`Repository` for persistence, `Provider`/`Gateway` for external systems, `Hasher`, `Clock`, …) — never the technology (no `Drizzle`, `Postgres`, `Aws`; the domain must not know what implements it). Examples: `OrderRepositoryInterface`, `PaymentTransactionProviderInterface`. Default-export them, model absence as `undefined`, and never throw from the contract:
+
+```typescript
+// domain/interfaces/OrderRepositoryInterface.ts
+import { type Order, type OrderFilter, type UpdateOrder } from '../Order.js';
+
+export default interface OrderRepositoryInterface {
+    findAll(filter?: OrderFilter): Promise<Order[]>;
+    findById(id: string): Promise<Order | undefined>;
+    create(order: Order): Promise<void>;
+    update(id: string, order: UpdateOrder): Promise<void>;
+    delete(id: string): Promise<void>;
+}
+```
+
+**`domain/errors/`** — one class per file, named in business language (`OrderNotFoundError`, `EmailAlreadyInUseError` — what went wrong, not where), extending the shared `DomainError` base instead of raw `Error`. Each subclass declares two readonly classifiers: a stable `code` (the client-facing contract — renaming the class must never change it) and a `category` (a small closed outcome-family set the HTTP layer maps to a transport status; see below). The base sets `name` from `new.target.name` so it still survives serialization, and forwards an optional `cause`:
+
+```typescript
+// shared/domain/DomainError.ts
+export type ErrorCategory = 'NotFound' | 'Forbidden' | 'Unauthorized' | 'Unprocessable';
+
+export abstract class DomainError extends Error {
+    abstract readonly code: string;
+    abstract readonly category: ErrorCategory;
+
+    protected constructor(message: string, options?: ErrorOptions) {
+        super(message, options);
+        this.name = new.target.name;
+    }
+}
+```
+
+```typescript
+// domain/errors/OrderNotFoundError.ts
+import { DomainError, type ErrorCategory } from '../../shared/domain/DomainError.js';
+
+export class OrderNotFoundError extends DomainError {
+    readonly code = 'ORDER_NOT_FOUND';
+    readonly category: ErrorCategory = 'NotFound';
+
+    constructor(id: string) {
+        super(`Order not found: ${id}`);
+    }
+}
+```
+
+`category` is a domain concern — it names an outcome family (not-found, forbidden, unauthorized, unprocessable) and says nothing about HTTP. Mapping a `category` to a transport status (404, 403, ...) is the HTTP layer's job, not the domain's — see `node-express-typescript`. This split is what lets a new error that reuses an existing `category` ship without touching the HTTP layer at all: only its own file changes.
+
+**Every concrete subclass must declare its own constructor**, even a trivial one-liner, even when it only forwards to `super(...)`. TypeScript keeps a subclass's *inherited* constructor accessibility when the subclass doesn't declare its own — so a subclass that omits its constructor stays `protected` (uncallable from outside the class hierarchy) exactly like the abstract base, and `new SomeError(...)` fails to typecheck anywhere outside `domain/errors/`.
+
+## Application layer (`<context>/application/`)
+
+One use case per meaningful business operation. Each file is self-contained and named after its class: the input `Query` interface, an optional `Response` interface, and the use case class.
+
+```typescript
+// application/CreateOrderUseCase.ts
+import { OrderTotalTooLowError } from '../domain/errors/OrderTotalTooLowError.js';
+import type OrderRepositoryInterface from '../domain/interfaces/OrderRepositoryInterface.js';
+import { type Order } from '../domain/Order.js';
+
+export interface CreateOrderQuery {
+    id: string; // generated by the caller, not by the use case
+    customerName: string;
+    total: number;
+    createdAt: Date; // generated by the caller, not by the use case
+}
+
+export interface CreateOrderResponse {
+    id: string;
+    customerName: string;
+    total: number;
+    createdAt: Date;
+}
+
+export class CreateOrderUseCase {
+    constructor(
+        private readonly orderRepository: OrderRepositoryInterface,
+    ) {}
+
+    public async invoke(query: CreateOrderQuery): Promise<CreateOrderResponse> {
+        if (query.total <= 0) {
+            throw new OrderTotalTooLowError(query.customerName);
+        }
+
+        const order: Order = {
+            id: query.id,
+            customerName: query.customerName,
+            total: query.total,
+            createdAt: query.createdAt,
+            updatedAt: query.createdAt,
+        };
+        await this.orderRepository.create(order);
+
+        // Map the domain entity to a custom Response — never return the entity itself.
+        return {
+            id: order.id,
+            customerName: order.customerName,
+            total: order.total,
+            createdAt: order.createdAt,
+        };
+    }
+}
+```
+
+Rules:
+
+- Class suffixed `UseCase`; filename equals class name; single public method `invoke(query)`.
+- A use case that needs input takes exactly one `<Name>Query` object of native types — never raw parameters, even for a single field (this keeps call sites stable when fields are added). A use case that needs no input omits the `Query` type and takes no argument (`invoke()`).
+- Declare a `<Name>Response` interface for the return shape; when not needed, omit it and return `void`.
+- Never return a domain entity from a use case — define and return a custom `<Name>Response` type instead. Returning the entity couples callers and the API to an internal domain shape.
+- Dependencies arrive through the constructor as `private readonly` domain interfaces.
+- The use case orchestrates: check existence, enforce business rules, throw domain errors, call repositories. No framework or library imports — if you need the database or crypto, depend on a domain interface for it.
+- Never generate values inside a use case or entity: no `new Date()`, `Date.now()`, `randomUUID()`, `Math.random()` or similar. Ids, timestamps and other generated values arrive in the `Query`, produced by the caller. Never read `process.env` either; configuration values are passed in through the constructor by the wiring.
+
+## Infrastructure layer (`<context>/infrastructure/`)
+
+The only layer where third-party libraries appear (ORM, crypto, HTTP clients). Each class implements a domain interface and is named `<Technology><Contract>`: `DrizzleOrderRepository`, `BcryptPasswordHasher`, `JwtAuthCryptoAdapter`. This has no exceptions — even a low-level client/connection wrapper (e.g. a database connection provider) implements a domain interface; there is no category of adapter exempt from this.
+
+**No class file sits directly under `infrastructure/`.** Every adapter goes in a subfolder named for its kind (`persistence/` for DB repositories, `providerApi/` for external HTTP clients, `database/`, `security/`, ...) — this applies identically to a context's own `infrastructure/` and to `shared/infrastructure/`, with no exception for single-file adapters. If the right grouping name isn't obvious, don't guess silently: ask the user, or propose 2–3 candidate names for them to pick from.
+
+**Schema placement.** ORM schema definitions belong to infrastructure. They may
+be co-located with a repository when they are local to a bounded context. If
+schema definitions become coupled across multiple contexts, move them to a shared
+infrastructure location. Repositories never import runtime schema objects
+directly—they receive the schema via constructor injection, making them
+independent of the schema's physical location.
+
+Repositories translate between persistence rows and domain entities — the mapping (including `null` → `undefined`) happens here so the domain never sees storage shapes. A repository receives the shared `DatabaseClientInterface` port itself (not a bare connection) for the query connection, **plus the schema view it needs, injected through the constructor** — never importing the runtime table-object values directly. It destructures the tables from that injected `schema`. Injecting the schema (rather than importing it) keeps the repository agnostic to **where** the definitions physically live — co-located below, or lifted into a shared location when they're coupled across contexts (see the trade-off above):
+
+```typescript
+// schema.ts — co-located under persistence/ when the table belongs to one
+// context; or in a shared location outside the contexts when definitions are
+// coupled across contexts. Either way the repository only receives it injected.
+import { pgTable, uuid, text, timestamp } from 'drizzle-orm/pg-core';
+
+export const orders = pgTable('orders', {
+    /* ... */
+});
+
+export type OrderSchema = { orders: typeof orders };
+```
+
+```typescript
+// infrastructure/persistence/DrizzleOrderRepository.ts
+import { eq } from 'drizzle-orm';
+import type DatabaseClientInterface from '../../../shared/domain/interfaces/DatabaseClientInterface.js';
+import type OrderRepositoryInterface from '../../domain/interfaces/OrderRepositoryInterface.js';
+import { type Order } from '../../domain/Order.js';
+import { type OrderSchema } from './schema.js'; // type only — the table objects arrive via the constructor
+
+export class DrizzleOrderRepository implements OrderRepositoryInterface {
+    constructor(
+        private readonly client: DatabaseClientInterface<OrderSchema>,
+        private readonly schema: OrderSchema,
+    ) {}
+
+    public async findById(id: string): Promise<Order | undefined> {
+        const db = this.client.connect();
+        const { orders } = this.schema;
+
+        const rows = await db.select().from(orders).where(eq(orders.id, id)).limit(1);
+        const row = rows[0];
+
+        if (!row) {
+            return undefined;
+        }
+
+        return {
+            id: row.id,
+            customerName: row.customerName,
+            total: row.total,
+            createdAt: row.createdAt,
+            updatedAt: row.updatedAt,
+        };
+    }
+
+    // create/update/delete follow the same pattern
+}
+```
+
+## Shared cross-cutting ports (`shared/domain/interfaces/`)
+
+Low-level infrastructure clients (a database connection provider, an HTTP client wrapper, …)
+are dependencies like any other — model them as ports in `shared/`, implemented once, and
+injected into every context that needs them. This applies without exception, even to a class
+that just wraps a driver/pool and exposes `connect`/`close`: it still implements a domain
+interface, exactly like a repository does. Time, ids and randomness are not ports: they are
+generated by the caller and passed in the `Query` (see the top of this document).
+
+```typescript
+// shared/domain/interfaces/DatabaseClientInterface.ts
+import { DatabaseConnection } from '@src/modules/shared/domain/Database.js';
+
+export default interface DatabaseClientInterface<Connection = unknown> {
+  connect(): void;
+  getConnection(): DatabaseConnection<Connection>;
+  close(): Promise<void>;
+}
+```
+
+```typescript
+// shared/infrastructure/database/DatabaseClient.ts
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { Pool } from 'pg';
+import type DatabaseClientInterface, { type DatabaseConnection } from '@src/modules/shared/domain/interfaces/DatabaseClientInterface.js';
+
+export type DatabaseConfig = {
+    host: string;
+    port: number;
+    user: string;
+    password: string;
+    database: string;
+};
+
+export class DatabaseClient<DatabaseSchema extends Record<string, unknown>>
+    implements DatabaseClientInterface<DatabaseSchema>
+{
+    private pool: Pool | undefined;
+
+    constructor(
+        private readonly config: DatabaseConfig,
+        private readonly databaseSchema: DatabaseSchema,
+    ) {}
+
+    public connect(): DatabaseConnection<DatabaseSchema> {
+        if (this.pool === undefined) {
+            this.pool = new Pool(this.config);
+        }
+
+        return drizzle(this.pool, { schema: this.databaseSchema });
+    }
+
+    public async close(): Promise<void> {
+        if (this.pool === undefined) {
+            return;
+        }
+
+        await this.pool.end();
+        this.pool = undefined;
+    }
+}
+```
+
+`shared/services.ts` instantiates these adapters once and exports the singletons every context's `services.ts` wires in:
+
+```typescript
+// shared/services.ts
+import { DatabaseClient } from './infrastructure/database/DatabaseClient.js';
+
+export const databaseClient = new DatabaseClient();
+```
+
+In tests, pass fixed ids and dates in the `Query` — no mocking `Date` or `crypto` globals, and use cases stay fully deterministic.
+
+## Wiring (`<context>/services.ts`)
+
+Each context wires its own pieces: instantiate the infrastructure implementations, inject them into use cases, and export the ready-to-call use cases. Code outside the context (HTTP handlers, CLI commands) imports only from `services.ts` — never a use case, repository, or schema directly:
+
+```typescript
+// order/services.ts
+import { CreateOrderUseCase } from './application/CreateOrderUseCase.js';
+import { GetOrderUseCase } from './application/GetOrderUseCase.js';
+import { DrizzleOrderRepository } from './infrastructure/persistence/DrizzleOrderRepository.js';
+import { schema } from './infrastructure/persistence/schema.js'; // or the shared location, if lifted out
+import { databaseClient } from '../shared/services.js';
+
+const orderRepository = new DrizzleOrderRepository(databaseClient, schema);
+
+export const createOrderUseCase = new CreateOrderUseCase(orderRepository);
+export const getOrderUseCase = new GetOrderUseCase(orderRepository);
+```
+
+## Testing
+
+The architecture buys you two kinds of tests, plus what's left uncovered on purpose. Pure unit tests concentrate at the use-case layer; integration tests are reserved for adapters at the edge. The domain layer is never tested on its own.
+
+- **Use case → unit test.** Instantiate the use case with **mocks** of the domain ports, and pass fixed ids and dates in the `Query`. Assert on the returned `Response` and on the mocks' interactions, and cover each domain-error branch. Fast, deterministic, no I/O and no mocking of globals — this is where the bulk of the business logic, and the domain errors it throws, gets verified.
+- **Infrastructure adapter → integration test.** Test against the **real** dependency (real DB, real HTTP client), never a mock — a mocked dependency proves nothing. What's under test is the mapping (row ↔ entity, `null → undefined`) and that the port contract holds against the real technology. How you provision that dependency is up to your setup.
+- **Composed adapters (an adapter with other adapters injected) → still integration.** The injection graph doesn't decide the test type — what sits at the bottom of it does. If the class's value comes from touching real technology (directly or through an injected adapter that wraps it), test it end-to-end against the real dependency. Mocking the injected port would erase the very thing the adapter exists to do. Smell to watch for: an "adapter" with real branching logic that depends *only* on other domain ports (no real technology of its own) is application logic in disguise — move it into a use case, where it gets a proper unit test with port mocks, and leave the thin adapters to integration tests.
+- **Domain (types, interfaces, errors) → no dedicated tests.** It has no logic of its own, so it's covered indirectly: interfaces by the port mocks and real adapters above, errors by the use-case error-branch assertions, plain types by nothing. **Exception: the shared `DomainError` base itself.** Unlike its declarative subclasses (a `code`, a `category`, a one-line constructor forwarding to `super`), the base class has actual logic — deriving `name` from `new.target.name`, forwarding `cause` — so it earns its own unit test, once, in `shared/domain/`. A concrete subclass still gets no dedicated test of its own.
+- **Wiring (`services.ts`) → no dedicated tests.** It has no logic of its own either — pure composition, instantiating and exporting singletons/use cases. Covered indirectly: `tsc` proves the exports are shaped correctly, and the unit/integration tests of what it wires (use cases, adapters) prove those pieces work. See `testing-practices` for the general "no logic, no test" rule this follows.
+
+| Component | Test type | Strategy |
+| --- | --- | --- |
+| Use case | Unit test | Mock ports, fixed shared dependencies, verify responses and interactions |
+| Infrastructure adapter | Integration test | Use real dependencies, verify mappings and contracts |
+| Domain (types / interfaces / errors) | — | No dedicated tests; covered through the use-case and adapter tests above |
+| Wiring (`services.ts`) | — | No dedicated tests; covered by `tsc` + the tests of what it wires |

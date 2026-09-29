@@ -1,0 +1,45 @@
+{
+  "name": "@url-shortener/engine",
+  "version": "0.0.1",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo .turbo",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "node --env-file=../../.env.dev ./node_modules/vitest/vitest.mjs run --coverage",
+    "test:unit": "node --env-file=../../.env.dev ./node_modules/vitest/vitest.mjs run --project unit",
+    "test:integration": "node --env-file=../../.env.dev ./node_modules/vitest/vitest.mjs run --project integration",
+    "db:push": "prisma db push",
+    "db:generate": "prisma generate"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@faker-js/faker": "^10.6.0",
+    "@types/node": "^22.19.7",
+    "@types/pg": "^8.23.1",
+    "@vitest/coverage-v8": "^5.0.2",
+    "eslint": "^10.11.0",
+    "globals": "^17.12.0",
+    "prisma": "^7.10.0",
+    "tsc-alias": "^1.9.5",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.70.1",
+    "vite-tsconfig-paths": "^5.1.4",
+    "vitest": "^5.0.2",
+    "vitest-mock-extended": "^5.1.1"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "^7.10.0",
+    "@prisma/client": "^7.10.0",
+    "dotenv": "^18.0.4",
+    "pg": "^8.23.0"
+  }
+}

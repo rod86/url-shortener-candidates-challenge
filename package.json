@@ -1,0 +1,20 @@
+{
+  "name": "url-shortener",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "node --env-file=.env.dev node_modules/turbo/bin/turbo dev --env-mode=loose",
+    "build": "turbo build",
+    "test": "node --env-file=.env.dev node_modules/turbo/bin/turbo test --env-mode=loose",
+    "test:unit": "turbo test:unit",
+    "test:integration": "node --env-file=.env.dev node_modules/turbo/bin/turbo test:integration --env-mode=loose",
+    "db:setup": "cd libs/engine && node --env-file=../../.env.dev ./node_modules/prisma/build/index.js db push && node --env-file=../../.env.dev ./node_modules/prisma/build/index.js generate",
+    "typecheck": "turbo typecheck",
+    "clean": "turbo run clean && rm -rf .turbo",
+    "clean:deep": "pnpm run clean && pnpm -r exec rm -rf node_modules && rm -rf node_modules"
+  },
+  "packageManager": "pnpm@10.20.0",
+  "devDependencies": {
+    "turbo": "^2.7.4"
+  }
+}
