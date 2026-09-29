@@ -19,9 +19,23 @@ url-shortener/
 | [Vite](https://vite.dev/)                     | Fast build tool and dev server with hot module replacement                                        |
 
 
+## Requirements
+
+- Node version 20.20.2 (for dev environment)
+- Docker and Docker compose
+
+> *NOTE*: for old docker versions, docker compose commands must run with `docker-compose`.
+
 ## Setup development environment
 
 The app runs on your machine with `turbo dev`; only Postgres runs in docker.
+
+- Install [Node Version Manager](https://github.com/nvm-sh/nvm).
+
+- Install and switch to node version.
+```shell
+nvm install & nvm use
+```
 
 - Install dependencies.
 ```bash
