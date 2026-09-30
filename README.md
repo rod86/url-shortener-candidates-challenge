@@ -115,3 +115,18 @@ Tests load `.env.dev`, so run them from the host with Postgres up (see *Setup de
 - `pnpm --filter web test`: Run all tests
 - `pnpm --filter web test:unit`: Run unit tests
 - `pnpm --filter web test:integration`: Run integration tests
+
+### Coverage
+
+- The coverage treshold is **80%*.
+- Coverage reports files are output in ``coverage/`` directory in the respective engine and web directories.
+  - web: ``applications/web/coverage``
+  - engine: ``libs/engine/coverage``
+- The coverage formats are:
+    - *text*: See coverage info in terminal.
+    - *html*: See coverage details in browser. Open ``coverage/index.html``.
+    - *json-summary*: Generates a ``coverage/coverage-summary.json`` (per-file totals).
+    - *lcov*: Generates a `coverage/lcov.info` (line/branch detail).
+
+> Formats **json-summary** and **lcov** are used by AI. When you ask AI "Explain why the statement "throw new ClickCreationError" (after creation) in @libs/engine/src/modules/click/application/RegisterClickUseCase.ts appears as uncovered",
+> AI will use the JSON and lcov files to see the coverage info and analyze the case.
