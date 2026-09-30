@@ -37,7 +37,7 @@ I would improve the project with:
 
 I used Claude for developing and generate the design.
 
-The design has been generated with Claude Design Tool. I uploaded a screenshot of the legacy app and I asked for a new UI design with Tailwind CSS version 4. (See attached screenshot)
+The design has been generated with Claude Design Tool. I uploaded a screenshot of the legacy app and I asked for a new UI design with Tailwind CSS version 4.
 
 For development, I used Claude CLI with the following skills:
 - ``.claude/skills/domain-driven-design``: Basic Domain Driven Design structure guidelines.
